@@ -1,6 +1,8 @@
 from statsmodels.tsa.stattools import adfuller
 import pandas as pd
 import numpy as np
+from statsmodels.tsa.stattools import coint
+
 
 def adf_test(series: pd.Series, regression: str='c',
              autolag: str='AIC', sig_level: float = 0.05) -> dict:
@@ -174,16 +176,94 @@ def hurst_exponent(series: pd.Series, max_lag: int = 100) -> float:
     """
     # Drop NaNs and make as a numpy array
     arr = series.dropna().values
+    n = len(arr)
+    # If passed a short spread use size / 4
+    max_lag = min(max_lag, n // 4)
     variances = []
+    lags = []
 
     for lag in range(1,max_lag+1):
         # Variance for each lag
+        # Let arr be given by a_0, a_1, ..., a_n-1
+        # Then we wish to shift the points by some lag and compute the difference
+        # For example if lag = 2 we want a_2, a_3, ..., a_n-1 - a_0, a_1, ..., a_n-3
+        # Thus the below 'diff' computes:
+        # arr[lag:] = a_l, a_l+1, ..., a_n-1
+        # arr[:-lag] = a_0, a_1, ..., a_n-1-l
         diff = arr[lag:] - arr[:-lag]
         # ddof = 1 to use n-1 not n for variance
-        variances.append(np.var(diff,ddof=1))
+        var = np.var(diff, ddof=1)
+        if var <= 0:
+            # skip these variances where log is bad
+            continue
+        variances.append(var)
+        lags.append(lag)
+
+    if len(lags) < 5:
+        # if we have too few points to make conclusions
+        return np.nan
     
-    log_lags = np.log(np.arange(2,max_lag))
+    log_lags = np.log(lags)
     log_vars = np.log(variances)
     res = ols_hedge_ratio(pd.Series(log_vars), pd.Series(log_lags))
     H = res['beta'] / 2
     return H
+
+from itertools import combinations
+
+def screen_pairs(
+    prices: pd.DataFrame,
+    sig_level: float = 0.05,
+    max_half_life: float = 30.0,
+    max_hurst: float = 0.4,
+    use_bonferroni: bool = True,
+) -> pd.DataFrame:
+    """
+    Screen all unique pairs for tradeable cointegration.
+    Returns a DataFrame sorted ascending by EG p-value with columns:
+      pair_y, pair_x, beta, r_squared, eg_p_value, half_life, hurst, tradeable
+    """
+    # Give all possible pair combinations
+    pairs = list(combinations(prices.columns, 2))
+
+    if use_bonferroni:
+        effective_sig = sig_level / len(pairs)
+    else:
+        effective_sig = sig_level
+    
+    pair_info = []
+
+    for a,b in pairs:
+        try:
+            result_1 = engle_granger_test(prices[a], prices[b], effective_sig)
+            result_2 = engle_granger_test(prices[b], prices[a], effective_sig)
+            # Since Engle-Granger is asymmetric we choose to use the regression
+            # which yields a lower p-value.
+            if result_1['adf_p_value'] < result_2['adf_p_value']:
+                result = result_1
+                y,x = a,b
+
+            else:
+                result = result_2
+                y,x = b,a
+
+
+            # Use coint for proper beta value
+            _, eg_p, _ = coint(prices[y], prices[x]) # optimize here later by not running the whole pipeline twice
+            hl = half_life(result['residuals'])
+            hurst = hurst_exponent(result['residuals'])
+            # In order to be considered tradeable we need an acceptable p-value,
+            # half life under max_half_life (30 days typically), and a satisfactory hurst exponent.
+            # The eg_p value and hurst exponent both check if the mean-reversion.
+            # eg_p also checks if the pair is cointegrated 
+            tradeable = (eg_p < effective_sig) and (0 < hl < max_half_life) and (
+                (hurst < max_hurst)
+            )
+            pair_info.append({'pair_y': y, 'pair_x': x, 'beta': result['beta'], 'r_squared': result['r_squared'],
+                                'eg_p_value': eg_p, 'half_life': hl, 'hurst': hurst, 'tradeable': tradeable})
+        except Exception as e:
+            print(f"[warn] failed on pair {a}-{b}: {e}")
+
+        
+    df = pd.DataFrame(pair_info).sort_values('eg_p_value').reset_index(drop=True)
+    return df
