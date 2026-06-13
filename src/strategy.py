@@ -21,7 +21,7 @@ def rolling_zscore(
     """
     rolling_mean_t = spread.rolling(window).mean()
     rolling_std_t = spread.rolling(window).std()
-    # By default pandas only uses up to window -1 bars
+    # By default pandas includes current bar as part of of window size
 
     z_t = (spread - rolling_mean_t) / rolling_std_t
 
