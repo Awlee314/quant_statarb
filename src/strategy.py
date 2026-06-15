@@ -59,3 +59,53 @@ def generate_signals_stateless(
     return signal
 
 
+def generate_signals_stateful(
+    z: pd.Series,
+    entry_z: float = 2.0,
+    exit_z: float = 0.5,
+    stop_z: float = 4.0,
+) -> pd.Series:
+    """
+    Stateful signal: walk through z-scores maintaining current position,
+    applying entry/exit/stop transitions. Correctly holds a position
+    between entry and exit thresholds.
+
+    Returns a Series of positions in {-1, 0, +1}, same index as z.
+    """
+    position = 0
+    positions_list = []
+    for val in z:
+        if pd.isna(val):
+            # First position so we have no signal
+            position = 0
+        
+        elif position == 0:
+            # Look for entry
+            if val > entry_z:
+                # Short position
+                position = -1
+            elif val < -entry_z:
+                # Long position
+                position = 1
+        elif position == 1:
+            # In a long position, hold unless stop loss or mean reversion
+            if val > -exit_z:
+                # Trigger an exit
+                position = 0
+            elif val <  -stop_z:
+                # Stop loss
+                position = 0
+            # Else we stay long
+        elif position == -1:
+            # In a short positon, hold unless stop loss or mean reversion
+            if val < exit_z: 
+                # Trigger an exit
+                position = 0
+            elif val > stop_z:
+                position = 0
+            # Else we stay short
+
+        positions_list.append(position)
+    
+    return pd.Series(positions_list, index=z.index)
+
