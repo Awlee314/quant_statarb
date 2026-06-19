@@ -81,10 +81,10 @@ def generate_signals_stateful(
         
         elif position == 0:
             # Look for entry
-            if val > entry_z:
+            if entry_z < val < stop_z:
                 # Short position
                 position = -1
-            elif val < -entry_z:
+            elif -stop_z < val < -entry_z:
                 # Long position
                 position = 1
         elif position == 1:
