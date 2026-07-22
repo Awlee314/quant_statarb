@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+from backtester import run_backtest
 
 
 def performance_summary(
@@ -68,4 +69,53 @@ def rolling_sharpe(
     roll_std = diff.rolling(window).std()
 
     return (roll_mean / roll_std) * np.sqrt(periods_per_year)
+
+def trade_statistics(trades: pd.DataFrame, include_open: bool = False) -> dict:
+    """
+    Trade-level statistics from a trade log with a `trade_pnl` column.
+
+    hit_rate       fraction of trades with positive P&L
+    avg_win        mean P&L of winning trades
+    avg_loss       mean P&L of losing trades (negative)
+    win_loss_ratio |avg_win / avg_loss|
+    profit_factor  gross profits / gross losses (>1 is profitable)
+    expectancy     mean P&L per trade
+    """
+
+    if 'trade_pnl' not in trades.columns:
+        raise ValueError("trades has no 'trade_pnl' column, pass net_pnl to extract trades.")
     
+    # If we include open then all trades
+    # If not then we exclude all trades that are still open
+    t = trades if include_open else trades[~trades['still_open']]
+
+    pnl = t['trade_pnl']
+
+    wins = pnl[pnl > 0]
+    losses = pnl[pnl < 0]
+
+    gross_profit = wins.sum()
+    gross_loss = -losses.sum() # make positive
+
+    avg_win = wins.mean() if len(wins) != 0 else np.nan
+    avg_loss = losses.mean() if len(losses) != 0 else np.nan
+
+    return {
+        'n_trades': len(t),
+        'n_wins': len(wins),
+        'n_losses': len(losses),
+        'hit_rate':  len(wins)/ len(t) if len(t) != 0 else np.nan,
+        'avg_win': avg_win,
+        'avg_loss': avg_loss,
+        'win_loss_ratio': abs(avg_win / avg_loss) if len(losses) != 0 and avg_loss != 0 else np.nan,
+        'profit_factor': gross_profit / gross_loss if gross_loss > 0 else np.inf,
+        'expectancy': pnl.mean(),
+        'avg_holding_period': t['holding_period'].mean()
+    }
+
+def sweep_sharpe(prices, y, x, beta, **kwargs) -> float:
+    """Sharpe for one parameter configuration. No capital normalization
+    needed — Sharpe is invariant to the scale of the P&L series."""
+    r = run_backtest(prices, y, x, beta, **kwargs)
+    pnl = r['equity_curve']['net_pnl']
+    return (pnl.mean() / pnl.std()) * np.sqrt(252) if pnl.std() > 0 else np.nan
