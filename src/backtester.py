@@ -1,8 +1,12 @@
-from strategy import rolling_zscore, generate_signals_stateful
+from strategy import rolling_zscore, generate_signals_stateful, rolling_zscore_walkforward
+from cointegration import rolling_hedge_ratio
 import pandas as pd
+import numpy as np
 
 
-def extract_trades(positions: pd.Series, still_open: bool = True) -> pd.DataFrame:
+def extract_trades(positions: pd.Series,
+                    net_pnl: pd.Series | None = None,
+                    still_open: bool = True) -> pd.DataFrame:
     """
     Walk a position series and extract round-trip trades.
 
@@ -13,6 +17,8 @@ def extract_trades(positions: pd.Series, still_open: bool = True) -> pd.DataFram
       - holding_period (in bars)
 
     Open positions at the end of the series (never closed) are flagged
+    If net_pnl is provided, adds a `trade_pnl` column: the sum of net P&L
+    over each trade's holding window.
     """
 
     trade_info = []
@@ -26,11 +32,18 @@ def extract_trades(positions: pd.Series, still_open: bool = True) -> pd.DataFram
             # Close the position
             holding = len(positions.loc[entry_date:date])-1
             # Gives us the length of trading days between entry and exit
-            trade_info.append({'entry_date': entry_date, 
+            row = {'entry_date': entry_date, 
                                'exit_date': date,
-                               'direction': prev_val,
+                               'direction': int(np.sign(prev_val)),
                                 'holding_period': holding,
-                                'still_open': False})
+                                'still_open': False}
+            if net_pnl is not None:    
+                index = net_pnl.index
+                index_entry = index.get_loc(entry_date)
+                index_exit = index.get_loc(date)
+                trade_pnl = net_pnl.iloc[index_entry +1 : index_exit + 2].sum()
+                row['trade_pnl'] = trade_pnl
+            trade_info.append(row)
         prev_val = val
     
     # Note that we only close when going to zero.
@@ -41,11 +54,19 @@ def extract_trades(positions: pd.Series, still_open: bool = True) -> pd.DataFram
         # Wish to count open positions as closed at the end
         last_date = positions.index[-1]
         holding = len(positions.loc[entry_date:last_date])-1
-        trade_info.append({'entry_date': entry_date, 
+
+        row = {'entry_date': entry_date, 
                                'exit_date': last_date,
-                               'direction': prev_val,
+                               'direction': int(np.sign(prev_val)),
                                 'holding_period': holding,
-                                'still_open': True})
+                                'still_open': True}
+        if net_pnl is not None:    
+            index = net_pnl.index
+            index_entry = index.get_loc(entry_date)
+            index_exit = index.get_loc(last_date)
+            trade_pnl = net_pnl.iloc[index_entry +1 : index_exit + 2].sum()
+            row['trade_pnl'] = trade_pnl
+        trade_info.append(row)
     df = pd.DataFrame(trade_info)
     return df
 
@@ -93,7 +114,7 @@ def compute_costs(
     positions: pd.Series,
     price_y: pd.Series,
     price_x: pd.Series,
-    beta: float,
+    beta: float | pd.Series,
     cost_bps: float = 5.0,
 ) -> pd.Series:
     """
@@ -180,21 +201,23 @@ def run_backtest(
         # Use dollar neutral sizing
         positions = size_dollar_neutral(signals, prices[y], prices[x], beta, target_notional)
     elif sizing == 'vol':
-        # Use volatility sizing
-        positions = size_vol_target(signals, spread, target_daily_vol, vol_window=window)
+        # Volatility sizing
+        positions = size_vol_target(signals, prices[y], prices[x], beta,
+                                target_daily_vol, vol_window=window)
     else:
         raise ValueError("The provided sizing option is not accepted. Sizing options are" \
         ": unit, dollar, vol")
 
     PnL = compute_pnl(positions, spread)
-    costs = compute_costs(positions, prices[y], prices[x], beta, cost_bps=cost_bps)
+    costs = compute_costs(positions, prices[y], prices[x], beta, cost_bps=cost_bps).fillna(0)
+    equity = build_equity_curve(PnL, costs, initial_capital=initial_capital)
 
     dictionary = {
         'spread': spread,
         'zscore': zscore,
         'positions': positions,
-        'equity_curve': build_equity_curve(PnL, costs, initial_capital=initial_capital),
-        'trades': extract_trades(positions)
+        'equity_curve': equity,
+        'trades': extract_trades(positions, net_pnl=equity['net_pnl'])
 
     }
 
@@ -202,51 +225,22 @@ def run_backtest(
 
 
 def compute_returns_series(
-    positions: pd.Series,
-    spread: pd.Series,
-    price_y: pd.Series,
-    price_x: pd.Series,
-    beta: float,
-    costs: pd.Series,
-    capital: float | None = None,
+    net_pnl: pd.Series,
+    capital: float,
 ) -> dict:
     """
-    Convert dollar P&L into a return series normalized by capital.
-
-    Daily dollar P&L (net) = position_{t-1} * Δspread_t - cost_t
-    Daily return          = net_dollar_pnl_t / capital
-
-    If `capital` is None, default to the peak two-leg notional over the
-    window: max(price_y + beta * price_x). This represents a fixed capital
-    allocation to the strategy (Option 2 — return on allocated capital,
-    including idle-cash drag on flat days).
-
-    Returns a dict with:
-      - daily_return: pd.Series
-      - capital_used: float (the C that was divided by)
-      - cum_return: pd.Series, the compounded equity curve (1+r).cumprod()
-      - total_return: float, final cum_return - 1
+    Normalize a net dollar P&L series into returns.
+    Caller supplies the P&L (from compute_pnl or compute_pnl_walkforward)
+    and the capital base, so this works for both fixed and walk-forward betas.
     """
-    if capital is None:
-        # Set capital to max two-leg notional (fixed capital)
-        capital = (price_y + beta * price_x).max()
-    
-    Net_PnL = compute_pnl(positions, spread) - costs
-
-    daily_return = Net_PnL / capital
-
-    cmpd = (1+daily_return.fillna(0)).cumprod()
-
-    # store the total returns
-    total_returns = cmpd.iloc[-1] - 1
-
-    dictionary = {
+    daily_return = net_pnl / capital
+    cumulative = (1 + daily_return.fillna(0)).cumprod()
+    return {
         'daily_return': daily_return,
         'capital_used': capital,
-        'cum_return': cmpd,
-        'total_return': total_returns
+        'cum_return': cumulative,
+        'total_return': cumulative.iloc[-1] - 1,
     }
-    return dictionary
     
 
 def size_dollar_neutral(
@@ -272,34 +266,41 @@ def size_dollar_neutral(
 
     units = target_notional / (price_y + beta * price_x)
 
-    positions_sized = units * signals
+    positions_sized = (units * signals).fillna(0)
 
     return positions_sized 
 
 def size_vol_target(
     signals: pd.Series,
-    spread: pd.Series,
+    price_y: pd.Series,
+    price_x: pd.Series,
+    betas: float | pd.Series,
     target_daily_vol: float = 100.0,
     vol_window: int = 60,
+
 ) -> pd.Series:
     """
     Convert ±1 signals into volatility-targeted sized positions.
 
-    Sizes each position inversely to the spread's rolling volatility so
-    that each trade targets `target_daily_vol` dollars of daily P&L
-    volatility:
+    Sizes each position inversely to the volatility of the spread's true
+    daily P&L per unit:
 
-        units_t = target_daily_vol / rolling_std(Δspread)_{t-1}
+        true_change_t = Δy_t - beta_{t-1} * Δx_t
+        units_t       = target_daily_vol / rolling_std(true_change)_{t-1}
 
-    The rolling vol is LAGGED one bar (shift(1)) to avoid look-ahead:
-    the size at t uses volatility known through t-1.
+    Using leg changes with the LAGGED beta (rather than spread.diff())
+    means the volatility estimate is not contaminated by discontinuities
+    in the spread when the hedge ratio is re-estimated. Works for both a
+    constant beta (float) and a time-varying beta (Series).
 
-    Returns a Series of sized positions (continuous, in spread units).
+    The rolling vol is lagged one bar to avoid look-ahead.
     """
-
+    beta_lag = betas.shift(1) if isinstance(betas, pd.Series) else betas
+    
+    true_change = price_y.diff() - beta_lag * price_x.diff()
     # Compute rolling std over vol_window and shift
     # Note the volatility is the standard deviation of the spread CHANGES
-    rolling_vol_lag = spread.diff().rolling(vol_window).std().shift(1)
+    rolling_vol_lag = true_change.rolling(vol_window).std().shift(1)
     # Add a floor so small volatility does not explode units
     rolling_vol_lag = rolling_vol_lag.clip(lower=rolling_vol_lag.median()*0.1)
     # Scale units according to how much volatility
@@ -310,3 +311,91 @@ def size_vol_target(
     # Fill NaN spots with 0
 
     return positions_sized
+
+
+
+def compute_pnl_walkforward(
+    positions: pd.Series,
+    price_y: pd.Series,
+    price_x: pd.Series,
+    betas: pd.Series,
+) -> pd.Series:
+    """
+    Daily gross P&L with a time-varying hedge ratio.
+
+        pnl_t = position_{t-1} * [Δy_t - beta_{t-1} * Δx_t]
+
+    Uses the beta that was IN EFFECT while the position was held
+    (beta_{t-1}), not the newly-estimated beta, so that changes in the
+    hedge ratio don't create phantom P&L. 
+    """
+    dy = price_y.diff()
+    dx = price_x.diff()
+
+    # Need the beta that was in effect in the current interval
+    # beta_{t-1} at time t
+    beta_lag = betas.shift(1)
+
+    pnl = positions.shift(1) * (dy - beta_lag * dx)
+
+    return pnl
+
+def run_backtest_walkforward(
+    prices: pd.DataFrame,
+    y: str,
+    x: str,
+    lookback: int = 252,
+    refit_every: int = 21,
+    window: int = 60,
+    entry_z: float = 2.0,
+    exit_z: float = 0.5,
+    stop_z: float = 4.0,
+    cost_bps: float = 5.0,
+    initial_capital: float = 1.0,
+    sizing: str = 'unit',
+    target_notional: float = 10000.0,
+    target_daily_vol: float = 100.0
+) -> dict:
+    """
+    Walk-forward backtest: beta re-estimated on a trailing window.
+    Returns dict with betas, spread, zscore, positions, equity_curve, trades.
+    """
+    betas = rolling_hedge_ratio(prices[y], prices[x], lookback, refit_every)
+    spread = prices[y] - betas * prices[x]
+
+    zscore = rolling_zscore_walkforward(prices[y], prices[x], betas, window=window)
+
+    signals = generate_signals_stateful(zscore, entry_z=entry_z, exit_z=exit_z, stop_z=stop_z)
+
+    if sizing == 'unit':
+        # Unit sizing
+        positions = signals
+    elif sizing == 'dollar':
+        # Use dollar neutral sizing
+        positions = size_dollar_neutral(signals, prices[y], prices[x], betas, target_notional)
+    elif sizing == 'vol':
+        # Use volatility sizing
+        positions = size_vol_target(signals, prices[y], prices[x], betas,
+                                target_daily_vol, vol_window=window)
+    else:
+        raise ValueError("The provided sizing option is not accepted. Sizing options are" \
+        ": unit, dollar, vol")
+
+    PnL = compute_pnl_walkforward(positions, prices[y], prices[x], betas)
+    # Note we have not included the
+    # rebalancing costs from beta changes. This is a simplification of the process.
+    costs = compute_costs(positions, prices[y], prices[x], betas, cost_bps=cost_bps)
+    equity = build_equity_curve(PnL, costs, initial_capital=initial_capital)
+
+
+    dictionary = {
+        'betas' : betas,
+        'spread': spread,
+        'zscore': zscore,
+        'positions': positions,
+        'equity_curve': equity,
+        'trades': extract_trades(positions, net_pnl=equity['net_pnl'])
+
+    }
+
+    return dictionary

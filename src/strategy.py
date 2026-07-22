@@ -109,3 +109,41 @@ def generate_signals_stateful(
     
     return pd.Series(positions_list, index=z.index)
 
+def rolling_zscore_walkforward(
+    price_y: pd.Series,
+    price_x: pd.Series,
+    betas: pd.Series,
+    window: int = 60,
+) -> pd.Series:
+    """
+    Rolling z-score of a spread under a time-varying hedge ratio.
+
+    For each block of bars sharing the same beta, the spread is recomputed
+    over the whole history using THAT beta, and the rolling mean/std are
+    taken from that internally consistent series. This prevents a beta
+    change from shifting the spread level underneath the rolling window,
+    which would otherwise inject an artificial jump into the z-score at
+    every refit date.
+
+    Returns a Series of z-scores, NaN where beta is undefined (warm-up)
+    or where the rolling window is incomplete.
+    """
+    z = pd.Series(np.nan, index=price_y.index)
+
+    valid = betas.notna()
+    if not valid.any():
+        return z
+
+    b = betas[valid]
+    # Group consecutive bars that share the same beta into blocks
+    block_id = (b != b.shift(1)).cumsum()
+
+    for _, block in b.groupby(block_id):
+        beta_val = block.iloc[0]
+        # Whole-history spread at this single beta
+        s = price_y - beta_val * price_x
+        z_block = (s - s.rolling(window).mean()) / s.rolling(window).std()
+        z.loc[block.index] = z_block.loc[block.index]
+
+    return z
+

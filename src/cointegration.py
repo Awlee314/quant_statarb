@@ -267,3 +267,34 @@ def screen_pairs(
         
     df = pd.DataFrame(pair_info).sort_values('eg_p_value').reset_index(drop=True)
     return df
+
+def rolling_hedge_ratio(
+    price_y: pd.Series,
+    price_x: pd.Series,
+    lookback: int = 252,
+    refit_every: int = 21,
+) -> pd.Series:
+    """
+    Estimate a time-varying hedge ratio by refitting OLS on a trailing window.
+
+    Every `refit_every` bars, fit beta on the trailing `lookback` bars
+    ending at t-1 (STRICTLY past data — no look-ahead). The fitted beta
+    is then held constant until the next refit.
+
+    Returns a Series of betas, same index as the inputs, NaN for the
+    warm-up period before the first full lookback window is available.
+    """
+    
+    betas = pd.Series(np.nan, index=price_x.index)
+    
+    for i in range(lookback, len(price_x), refit_every):
+        cur_x = price_x.iloc[i - lookback:i]
+        cur_y = price_y.iloc[i - lookback:i]
+        beta_cur = ols_hedge_ratio(cur_y, cur_x)['beta']
+        betas.iloc[i:i + refit_every] = beta_cur
+
+    return betas
+
+
+
+        
