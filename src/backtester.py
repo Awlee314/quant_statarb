@@ -384,7 +384,7 @@ def run_backtest_walkforward(
     PnL = compute_pnl_walkforward(positions, prices[y], prices[x], betas)
     # Note we have not included the
     # rebalancing costs from beta changes. This is a simplification of the process.
-    costs = compute_costs(positions, prices[y], prices[x], betas, cost_bps=cost_bps)
+    costs = compute_costs(positions, prices[y], prices[x], betas, cost_bps=cost_bps).fillna(0)
     equity = build_equity_curve(PnL, costs, initial_capital=initial_capital)
 
 

@@ -43,7 +43,7 @@ def generate_signals_stateless(
     Returns a Series of target positions in {-1, 0, +1}.
 
     NOTE: This is a simplified first pass. It does NOT correctly handle the
-    "hold position between entry and exit thresholds" behavior — that
+    "hold position between entry and exit thresholds" behavior, that
     requires state, which we add in Phase 3B. This version is for
     understanding the z-to-position mapping only.
     """
@@ -76,7 +76,7 @@ def generate_signals_stateful(
     positions_list = []
     for val in z:
         if pd.isna(val):
-            # First position so we have no signal
+            # No z-score available (e.g. warm-up period), stay flat
             position = 0
         
         elif position == 0:

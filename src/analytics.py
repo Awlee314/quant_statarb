@@ -115,7 +115,7 @@ def trade_statistics(trades: pd.DataFrame, include_open: bool = False) -> dict:
 
 def sweep_sharpe(prices, y, x, beta, **kwargs) -> float:
     """Sharpe for one parameter configuration. No capital normalization
-    needed — Sharpe is invariant to the scale of the P&L series."""
+    needed, Sharpe is invariant to the scale of the P&L series."""
     r = run_backtest(prices, y, x, beta, **kwargs)
     pnl = r['equity_curve']['net_pnl']
     return (pnl.mean() / pnl.std()) * np.sqrt(252) if pnl.std() > 0 else np.nan

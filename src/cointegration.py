@@ -248,7 +248,7 @@ def screen_pairs(
                 y,x = b,a
 
 
-            # Use coint for proper beta value
+            # Use coint for a proper p-value (MacKinnon response surface, not the plain ADF table)
             _, eg_p, _ = coint(prices[y], prices[x]) # optimize here later by not running the whole pipeline twice
             hl = half_life(result['residuals'])
             hurst = hurst_exponent(result['residuals'])
@@ -278,7 +278,7 @@ def rolling_hedge_ratio(
     Estimate a time-varying hedge ratio by refitting OLS on a trailing window.
 
     Every `refit_every` bars, fit beta on the trailing `lookback` bars
-    ending at t-1 (STRICTLY past data — no look-ahead). The fitted beta
+    ending at t-1 (STRICTLY past data, no look-ahead). The fitted beta
     is then held constant until the next refit.
 
     Returns a Series of betas, same index as the inputs, NaN for the

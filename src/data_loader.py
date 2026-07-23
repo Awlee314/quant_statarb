@@ -121,13 +121,12 @@ def get_universe(name: str) -> list[str]:
 
 if __name__ == "__main__":
     
-    tickers = ['JPM', 'BAC', 'C', 'WFC', 'GS', 'MS', 'XOM', 
+    tickers = ['JPM', 'BAC', 'C', 'WFC', 'GS', 'MS', 'XOM',
                'CVX', 'COP', 'OXY', 'SLB', 'EOG','SPY', 'IVV']
     # JP Morgan (JPM), Bank of America Corp (BAC), Citigroup Inc (C),
     #  Wells Fargo & Co (WFC), Goldman Sachs Group Inc (GS), Morgan Stanley (MS),
     # Exxon Mobil Corp (XOM), Chevron Corp (CVX), ConocoPhillips (COP),
-    # Occidental Petroleum Corp (OXY), Slb NV (SLB), EOG Resources Inc (EOG), 
+    # Occidental Petroleum Corp (OXY), SLB N.V. (SLB), EOG Resources Inc (EOG),
     # State Street SPDR S&P 500 ETF Trust (SPY), iShares Core S&P 500 ETF (IVV)
-    # Invesco QQQ Trust, Series 1 (QQQ), State Street Technology Select Sector SPDR ETF (XLK)
 
     download_prices(tickers,'2020-01-01','2020-12-31')
